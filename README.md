@@ -1,4 +1,4 @@
-## Torch implementation of Sparse coding algorithm 
+## Torch implementation of sparse coding algorithm 
 
 
 ### References:
