@@ -1,5 +1,4 @@
-## Torch implementation of sparse coding algorithm 
-
+# Torch implementation of sparse coding algorithm  
 
 ### References:
 * Olshausen & Field, Nature (1996)
