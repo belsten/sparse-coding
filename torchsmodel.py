@@ -3,6 +3,7 @@ import torch
 from torch.utils.data import DataLoader
 import pickle as pkl
 
+
 class sparsecoding(torch.nn.Module):
     
     def __init__(self,n_basis,n,lmbda=0.2,eta=1e-2,device=None,**kwargs):
@@ -60,42 +61,44 @@ class sparsecoding(torch.nn.Module):
             input images
         ---
         Returns:
-        A - scalar (batch_size,n_basis)
+        a - scalar (batch_size,n_basis)
             sparse coefficients
         """
         batch_size = I.size(0)
 
         # initialize
-        A = torch.zeros((batch_size,self.n_basis)).to(self.device)
-        residual = I - torch.mm(self.D,A.t()).t()
+        a = torch.zeros((batch_size,self.n_basis)).to(self.device)
+        residual = I - torch.mm(self.D,a.t()).t()
        
         for i in range(self.n_itr):
             
-            A = A.add(self.eta * self.D.t().mm(residual.t()).t())
-            A = A.sub(self.eta * self.lmbda).clamp(min=0.0)
+            # update coefficients
+            a = a + self.eta*((self.D.t()@residual.t()).t() - self.lmbda*torch.sign(a))
+            
+            # check stopping criteria
             if self.stop_early:
-                residual_new = I - torch.mm(self.D,A.t()).t()
+                residual_new = I - torch.mm(self.D,a.t()).t()
                 if (residual_new - residual).norm(p=2).sum() < self.eps:
                     break
                 residual = residual_new
             else:
-                residual = I - torch.mm(self.D,A.t()).t()    
+                residual = I - torch.mm(self.D,a.t()).t()    
             # check for nans
-            self.checknan(A,'coefficients')
-        return A
+            self.checknan(a,'coefficients')
+        return a
     
     
     def lca(self,I):
         """
-        Infer coefficients for each image in I made up of dict elements D
-        Method implemented according Locally competative algorithm (Rozell 2008)
+        Infer coefficients for each image in I using dict elements self.D
+        Method implemented according locally competative algorithm (Rozell 2008)
         ---
         Parameters:
         I - torch.tensor (batch_size,n)
             input images
         ---
         Returns:
-        A - scalar (batch_size,n_basis)
+        a - torch.tensor (batch_size,n_basis)
             sparse coefficients
         """
         batch_size = I.size(0)
@@ -126,12 +129,12 @@ class sparsecoding(torch.nn.Module):
         """
         Soft threshhold function according to Rozell 2008
         
-        inputs:
-        u - torch tensor (batch_size,n_basis)
+        Parameters:
+        u - torch.tensor (batch_size,n_basis)
             membrane potentials
         ---
-        returns: 
-        a - torch tensor (batch_size,n_basis)
+        Returns: 
+        a - torch.tensor (batch_size,n_basis)
             activations
         """
         a = (torch.abs(u) - self.thresh).clamp(min=0.)
@@ -140,18 +143,21 @@ class sparsecoding(torch.nn.Module):
         
                 
 
-    def updatedict(self,I,A):
+    def updatedict(self,I,a):
         """
         Compute gradient of energy function w.r.t. dict elements, and update 
         ---
         Parameters:
-        I - scalar (batch_size,n)
+        I - torch.tensor (batch_size,n)
             input images, n_images usually batch size
-        A - scalar (batch_size,n_basis)
+        a - torch.tensor (batch_size,n_basis)
             alread-inferred coefficients
+        ---
+        Returns:
+        None
         """
-        residual = I - torch.mm(self.D,A.t()).t()
-        dD = torch.mm(residual.t(),A)
+        residual = I - torch.mm(self.D,a.t()).t()
+        dD = torch.mm(residual.t(),a)
         if self.dict_decay != None:
             dD = dD + self.dict_decay*self.D
         self.D = torch.add(self.D, self.nabla*dD)
@@ -161,6 +167,12 @@ class sparsecoding(torch.nn.Module):
     def normalizedict(self):
         """
         Normalize columns of dictionary matrix D s.t. 
+        ---
+        Parameters:
+        None
+        ---
+        Returns:
+        None
         """
         self.D = self.D.div_(self.D.norm(p=2,dim=0))
         self.checknan()
@@ -191,13 +203,19 @@ class sparsecoding(torch.nn.Module):
                 dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
                 iterloader = iter(dataloader)
                 batch = next(iterloader)
+                
             # infer coefficients
-            A = self.lca(batch)
+            a = self.lca(batch)
+            
             # update dictionary
-            self.updatedict(batch,A)
+            self.updatedict(batch,a)
+            
             # normalize dictionary
             self.normalizedict()
-            l = (batch-torch.mm(self.D,A.t()).t()).norm(dim=1).square().sum()+(self.lmbda*A).sum()
+            
+            # compute current energy
+            l = torch.sum(torch.square(torch.linalg.vector_norm(batch-torch.mm(self.D,a.t()).t(),dim=1)) 
+                          + self.lmbda*torch.abs(a).sum(dim=1))
             loss.append(l.to(self.device).cpu().detach().numpy())
         return np.asarray(loss)
         
@@ -205,6 +223,13 @@ class sparsecoding(torch.nn.Module):
     def getnumpydict(self):
         """
         return dictionary as numpy array
+        ---
+        Parameters: 
+        None
+        ---
+        Returns:
+        D - scalar (n,n_basis)
+            numpy dictionary
         """
         return self.D.cpu().detach().numpy()
     
@@ -218,6 +243,9 @@ class sparsecoding(torch.nn.Module):
             data to check for nans
         name - string
             name to add to error, if one is thrown
+        ---
+        Returns:
+        None
         """
         if torch.isnan(data).any():
             raise ValueError('sparsecoding error: nan in %s.'%(name))
@@ -229,8 +257,12 @@ class sparsecoding(torch.nn.Module):
         '''
         Load dictionary from pkl dump
         ---
+        Parameters:
         filename - string
             file to load as self.D
+        ---
+        Returns:
+        None
         '''
         file = open(filename,'rb')
         nD = pkl.load(file)
@@ -242,8 +274,12 @@ class sparsecoding(torch.nn.Module):
         '''
         Save dictionary to pkl dump
         ---
+        Parameters:
         filename - string
             file to save self.D to
+        ---
+        Returns:
+        None
         '''
         filehandler = open(filename,"wb")
         pkl.dump(self.getnumpydict(),filehandler)
